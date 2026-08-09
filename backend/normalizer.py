@@ -95,6 +95,10 @@ def normalize_name(raw: str) -> str:
     name = raw.strip()
     # Remove derivative contract suffixes (e.g., "March 2026 Future")
     name = _DERIVATIVE_SUFFIX.sub("", name)
+    # Strip trailing SEBI disclosure footnote markers (* ** # ^ £ and stray
+    # non-decodable symbols) before suffix handling, e.g. "...Ltd.£",
+    # "Malco Energy Limited **#" -> clean name.
+    name = re.sub(r"[\s*#^~£¥§•·£�]+$", "", name)
     # Remove trailing dots and extra whitespace
     name = re.sub(r"\.+$", "", name)
     # Case-fold
@@ -106,6 +110,55 @@ def normalize_name(raw: str) -> str:
     # Collapse multiple spaces
     name = re.sub(r"\s+", " ", name)
     return name
+
+
+# Explicit overrides for scheme names that can't be auto-detected correctly
+_SCHEME_NAME_OVERRIDES = {
+    "capitalmind mutual fund": "Capitalmind Flexi Cap Fund",
+    "pursuant to regulation 59a of securities & exchange board of india (mutual funds) regulations, 1996": "Zerodha Nifty LargeMidcap 250 Index Fund",
+}
+
+
+def normalize_scheme_name(raw: str) -> str:
+    """Normalize a mutual fund scheme name to proper title case."""
+    if not raw or not isinstance(raw, str):
+        return raw
+    name = raw.strip()
+    # Check explicit overrides first
+    override = _SCHEME_NAME_OVERRIDES.get(name.lower().strip())
+    if override:
+        return override
+    # Collapse whitespace
+    name = re.sub(r"\s+", " ", name)
+    # Strip common prefixes like "Portfolio Of"
+    name = re.sub(r"^(?:Portfolio\s+Of|Statement\s+Of)\s+", "", name, flags=re.IGNORECASE)
+    # Strip trailing date suffixes like "As On 28-Feb-2026" or "As On February 2026"
+    name = re.sub(
+        r"\s+As\s+On\s+\d{1,2}[-/]\w{3,9}[-/]\d{2,4}\s*$", "", name, flags=re.IGNORECASE
+    )
+    name = re.sub(
+        r"\s+As\s+On\s+\w+\s+\d{2,4}\s*$", "", name, flags=re.IGNORECASE
+    )
+    # Strip long parenthetical descriptions
+    name = re.sub(r"\s*\(An?\s+Open\s+Ended\s+.*?\)\s*$", "", name, flags=re.IGNORECASE)
+    name = name.strip()
+    # Title-case each word, but preserve common uppercase acronyms
+    _UPPERCASE_WORDS = {
+        "ETF", "IDCW", "NAV", "SIP", "NFO", "AUM", "ELSS", "FOF",
+        "SBI", "HDFC", "ICICI", "DSP", "UTI", "PGIM", "HSBC", "PPFAS",
+        "IIFL", "ITI", "JM", "LIC", "NJ", "NPS", "ABSL",
+    }
+    words = name.split()
+    result = []
+    for w in words:
+        upper = w.upper()
+        if upper in _UPPERCASE_WORDS:
+            result.append(upper)
+        elif len(w) <= 1:
+            result.append(w.upper())
+        else:
+            result.append(w[0].upper() + w[1:].lower() if w[0].islower() or w.isupper() or w.islower() else w)
+    return " ".join(result)
 
 
 def detect_cash_equivalent(name: str, isin: Optional[str] = None) -> Optional[str]:
@@ -139,6 +192,17 @@ def _clean_header(header: str) -> str:
     return re.sub(r"\s+", " ", header.strip().lower())
 
 
+def _get_data_column(sheet, row_idx: int, col_idx: int) -> int:
+    """
+    If a header cell is part of a merged range, return the rightmost column
+    of that range (where the data typically lives). Otherwise return col_idx.
+    """
+    for mr in sheet.merged_cells.ranges:
+        if mr.min_row <= row_idx <= mr.max_row and mr.min_col <= col_idx <= mr.max_col:
+            return mr.max_col
+    return col_idx
+
+
 def find_header_row(sheet, max_rows: int = 15) -> tuple[int, dict]:
     """
     Scan the first `max_rows` rows of an openpyxl sheet to find the header row.
@@ -167,12 +231,15 @@ def find_header_row(sheet, max_rows: int = 15) -> tuple[int, dict]:
             if not cleaned:
                 continue
 
+            # If this header cell is merged, use the rightmost column for data
+            data_col = _get_data_column(sheet, row_idx, col_idx)
+
             # Try exact match first
             for canonical, aliases in COLUMN_ALIASES.items():
                 if canonical in mapping:
                     continue
                 if cleaned in aliases:
-                    mapping[canonical] = col_idx
+                    mapping[canonical] = data_col
                     score += 2
                     break
             else:
@@ -190,7 +257,7 @@ def find_header_row(sheet, max_rows: int = 15) -> tuple[int, dict]:
                 if matches:
                     canonical = alias_to_canonical[matches[0]]
                     if canonical not in mapping:
-                        mapping[canonical] = col_idx
+                        mapping[canonical] = data_col
                         score += 1
 
         if score > best_score:
@@ -214,13 +281,45 @@ def detect_unit_multiplier(sheet, header_row: int, market_value_col: int) -> flo
     return 1.0  # Already in Lakhs (default)
 
 
+# Stable sheet-tab-name -> canonical scheme name overrides.
+# Some AMC files (e.g. Abakkus consolidated disclosure) carry a generic AMC
+# banner ("Abakkus Mutual Fund") in the first title row, which the row-scan
+# heuristic would otherwise pick instead of the specific scheme name — causing
+# multiple schemes in one workbook to collapse to the same name. The sheet tab
+# codes are stable across all months, so we anchor on them.
+_SHEET_TAB_SCHEME_OVERRIDES = {
+    "ABAFC": "Abakkus Flexi Cap Fund",
+    "ABASC": "Abakkus Small Cap Fund",
+    "ABALI": "Abakkus Liquid Fund",
+}
+
+# Prefix overrides for sheet tabs that carry a trailing date (e.g.
+# "CMFCF_April 30, 2026", "CMMAAF_May 2026"). Both Capitalmind schemes share the
+# "Capitalmind Mutual Fund" banner, so the tab code is the only stable way to
+# tell the Flexi Cap fund apart from the Multi Asset Allocation fund — without
+# this they would collapse into one scheme.
+_SHEET_TAB_PREFIX_OVERRIDES = {
+    "CMMAAF": "Capitalmind Multi Asset Allocation Fund",
+    "CMFCF": "Capitalmind Flexi Cap Fund",
+}
+
+
 def extract_scheme_name(sheet, header_row: int, column_mapping: dict) -> str:
     """
-    Extract the scheme name from a sheet using three strategies:
+    Extract the scheme name from a sheet using these strategies:
+    0. Stable sheet-tab-name override (for multi-scheme AMC workbooks)
     1. Look for a 'scheme_name' column in the data
     2. Check merged cells / rows above the header for scheme name text
     3. Fall back to sheet tab name
     """
+    # Strategy 0: Stable sheet-tab override (exact, then prefix)
+    tab = sheet.title.strip().upper()
+    if tab in _SHEET_TAB_SCHEME_OVERRIDES:
+        return _SHEET_TAB_SCHEME_OVERRIDES[tab]
+    for prefix, scheme in _SHEET_TAB_PREFIX_OVERRIDES.items():
+        if tab.startswith(prefix):
+            return scheme
+
     # Strategy 1: Check rows above header for scheme name text
     scheme_keywords = ["fund", "scheme", "plan", "growth", "dividend", "direct", "regular", "idcw"]
     for row_idx in range(1, header_row):

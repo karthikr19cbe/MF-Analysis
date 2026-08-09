@@ -2,11 +2,19 @@ import { useState, useMemo } from 'react';
 import { X, ArrowUpDown, Search, Filter } from 'lucide-react';
 import type { Stock } from '../../types/portfolio';
 import { formatLakhs, formatPct, formatNumber } from '../../lib/formatters';
+import { buildMarketCapMap, type MarketCapCategory } from '../../lib/marketCapClassifier';
+
+const CAP_BADGE: Record<MarketCapCategory, string> = {
+  'Large Cap': 'bg-blue-950 text-blue-400 border-blue-800',
+  'Mid Cap': 'bg-amber-950 text-amber-400 border-amber-800',
+  'Small Cap': 'bg-emerald-950 text-emerald-400 border-emerald-800',
+};
 
 interface StockListTableProps {
   stocks: Record<string, Stock>;
   onClose: () => void;
   fundName?: string | null;
+  allStocks?: Record<string, Stock>;
 }
 
 type SortKey = 'name' | 'sector' | 'total_market_value_lakhs' | 'weighted_avg_pct' | 'fund_count' | 'asset_class';
@@ -24,11 +32,13 @@ const ASSET_CLASS_COLORS: Record<string, string> = {
   'Derivatives': 'bg-red-100 text-red-700',
 };
 
-export function StockListTable({ stocks, onClose, fundName }: StockListTableProps) {
+export function StockListTable({ stocks, onClose, fundName, allStocks }: StockListTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>('total_market_value_lakhs');
   const [sortAsc, setSortAsc] = useState(false);
   const [search, setSearch] = useState('');
   const [assetClassFilter, setAssetClassFilter] = useState<string>('all');
+
+  const capMap = useMemo(() => buildMarketCapMap(allStocks ?? stocks), [allStocks, stocks]);
 
   const stockList = Object.values(stocks);
 
@@ -110,7 +120,7 @@ export function StockListTable({ stocks, onClose, fundName }: StockListTableProp
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
             <input
               type="text"
-              placeholder="Search by name, ISIN, or sector..."
+              placeholder="Search by name or sector..."
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -139,7 +149,7 @@ export function StockListTable({ stocks, onClose, fundName }: StockListTableProp
               <tr className="border-b border-slate-200">
                 <th className="py-3 px-3 text-left text-slate-500 font-medium w-10">#</th>
                 <SortHeader label="Stock Name" field="name" />
-                <th className="py-3 px-3 text-left text-slate-600 font-medium">ISIN</th>
+                <th className="py-3 px-3 text-left text-slate-600 font-medium">Cap</th>
                 <SortHeader label="Asset Class" field="asset_class" />
                 <SortHeader label="Sector" field="sector" />
                 {!fundName && <SortHeader label="Funds" field="fund_count" align="right" />}
@@ -152,7 +162,16 @@ export function StockListTable({ stocks, onClose, fundName }: StockListTableProp
                 <tr key={stock.isin || stock.name + i} className="border-b border-slate-50 hover:bg-slate-50">
                   <td className="py-2 px-3 text-slate-400 text-xs">{i + 1}</td>
                   <td className="py-2 px-3 font-medium text-slate-800">{stock.name}</td>
-                  <td className="py-2 px-3 text-slate-500 font-mono text-xs">{stock.isin || '—'}</td>
+                  <td className="py-2 px-3">
+                    {stock.asset_class === 'Equity' ? (() => {
+                      const cap = (stock.isin && capMap.get(stock.isin)) || 'Small Cap';
+                      return (
+                        <span className={`text-xs font-medium px-1.5 py-0.5 rounded border ${CAP_BADGE[cap]}`}>
+                          {cap.replace(' Cap', '')}
+                        </span>
+                      );
+                    })() : <span className="text-slate-400 text-xs">—</span>}
+                  </td>
                   <td className="py-2 px-3">
                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${ASSET_CLASS_COLORS[stock.asset_class] || 'bg-gray-100 text-gray-700'}`}>
                       {stock.asset_class || 'Equity'}

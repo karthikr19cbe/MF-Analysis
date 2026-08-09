@@ -1,21 +1,31 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Star, ArrowUpDown, ChevronDown, ChevronRight } from 'lucide-react';
 import type { HighConviction, Stock } from '../../types/portfolio';
 import { formatLakhs, formatPct, formatNumber } from '../../lib/formatters';
+import { buildMarketCapMap, type MarketCapCategory } from '../../lib/marketCapClassifier';
+
+const CAP_BADGE: Record<MarketCapCategory, string> = {
+  'Large Cap': 'bg-blue-950 text-blue-400 border-blue-800',
+  'Mid Cap': 'bg-amber-950 text-amber-400 border-amber-800',
+  'Small Cap': 'bg-emerald-950 text-emerald-400 border-emerald-800',
+};
 
 interface HighConvictionTableProps {
   data: HighConviction[];
   stocks: Record<string, Stock>;
+  allStocks?: Record<string, Stock>;
   title?: string;
   subtitle?: string;
 }
 
 type SortKey = 'fund_count' | 'avg_weight_pct' | 'appearance_pct' | 'total_market_value_lakhs';
 
-export function HighConvictionTable({ data, stocks, title = "High Conviction Stocks", subtitle = "Stocks appearing in multiple funds" }: HighConvictionTableProps) {
+export function HighConvictionTable({ data, stocks, allStocks, title = "High Conviction Stocks", subtitle = "Stocks appearing in multiple funds" }: HighConvictionTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>('fund_count');
   const [sortAsc, setSortAsc] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  const capMap = useMemo(() => buildMarketCapMap(allStocks ?? stocks), [allStocks, stocks]);
 
   const sorted = [...data].sort((a, b) => {
     const diff = a[sortKey] - b[sortKey];
@@ -82,7 +92,7 @@ export function HighConvictionTable({ data, stocks, title = "High Conviction Sto
               <th className="w-8 py-3 px-1"></th>
               <th className="text-left py-3 px-2 text-slate-400 font-medium">Stock</th>
               <th className="text-left py-3 px-2 text-slate-400 font-medium">Type</th>
-              <th className="text-left py-3 px-2 text-slate-400 font-medium">ISIN</th>
+              <th className="text-left py-3 px-2 text-slate-400 font-medium">Cap</th>
               <th className="text-left py-3 px-2 text-slate-400 font-medium">Sector</th>
               <th
                 className="text-right py-3 px-2 text-slate-400 font-medium cursor-pointer hover:text-slate-100"
@@ -121,7 +131,8 @@ export function HighConvictionTable({ data, stocks, title = "High Conviction Sto
           <tbody>
             {sorted.map((stock, i) => {
               const rowKey = stock.isin || stock.name + i;
-              const highConviction = stock.appearance_pct >= 50;
+              // "High" = appears in >=50% of funds — only meaningful across multiple funds.
+              const highConviction = stock.appearance_pct >= 50 && stock.total_funds > 1;
               const isExpanded = expandedRows.has(rowKey);
               const funds = getStockFunds(stock);
 
@@ -159,7 +170,16 @@ export function HighConvictionTable({ data, stocks, title = "High Conviction Sto
                         {stock.asset_class || 'Equity'}
                       </span>
                     </td>
-                    <td className="py-2.5 px-2 text-slate-400 font-mono text-xs">{stock.isin || '—'}</td>
+                    <td className="py-2.5 px-2">
+                      {stock.asset_class === 'Equity' ? (() => {
+                        const cap = (stock.isin && capMap.get(stock.isin)) || 'Small Cap';
+                        return (
+                          <span className={`text-xs font-medium px-1.5 py-0.5 rounded border ${CAP_BADGE[cap]}`}>
+                            {cap.replace(' Cap', '')}
+                          </span>
+                        );
+                      })() : <span className="text-slate-500 text-xs">—</span>}
+                    </td>
                     <td className="py-2.5 px-2 text-slate-400">{stock.sector || '—'}</td>
                     <td className="py-2.5 px-2 text-right font-medium text-slate-200">
                       {stock.fund_count}/{stock.total_funds}

@@ -18,6 +18,7 @@ import openpyxl
 
 from normalizer import (
     normalize_name,
+    normalize_scheme_name,
     detect_cash_equivalent,
     find_header_row,
     detect_unit_multiplier,
@@ -68,7 +69,7 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
             col_map["sector"] = col_map["rating"]
             logger.info(f"  Using 'Rating' column as sector for sheet '{sheet.title}'")
 
-    scheme_name = extract_scheme_name(sheet, header_row, col_map)
+    scheme_name = normalize_scheme_name(extract_scheme_name(sheet, header_row, col_map))
 
     # Detect value units
     multiplier = 1.0
@@ -82,6 +83,7 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
         ("(a) listed", None),  # sub-section, keep current class
         ("(b) reit", "REIT"),
         ("(b) invit", "REIT"),
+        ("reits & invit", "REIT"),
         ("reit", "REIT"),
         ("invit", "REIT"),
         ("(b) unlisted", None),
@@ -91,6 +93,9 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
         ("certificate of deposit", "Money Market"),
         ("commercial paper", "Commercial Paper"),
         ("treasury bill", "Treasury Bills"),
+        ("exchange traded fund", "Commodities"),  # gold/silver ETFs in multi-asset funds
+        ("gold etf", "Commodities"),
+        ("silver etf", "Commodities"),
         ("mutual fund unit", "Mutual Fund Units"),
         ("reverse repo", "TREPS"),
         ("treps", "TREPS"),
@@ -122,8 +127,19 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
         "for the period ended",
     ]
 
+    # Asset classes that are SUB-sections nested under a main section (e.g. a
+    # "(b) Reits" block inside "Equity & Equity related"). They apply only until
+    # their own "Sub Total" row, after which we revert to the enclosing main
+    # section's class. This prevents the sticky class from leaking onto sibling
+    # rows listed after the sub-block (e.g. equity shares listed after a REIT
+    # sub-total — as happens with the Vedanta demerger entities).
+    # REIT/InvIT nest under Equity; Treasury Bills nest under Money Market.
+    # Both revert to their enclosing main section on the closing "Sub Total".
+    SUBSECTION_CLASSES = {"REIT", "Treasury Bills"}
+
     holdings = []
-    current_asset_class = "Equity"  # Default
+    current_main_class = "Equity"   # Enclosing main section (revert target)
+    current_asset_class = "Equity"  # Effective class for the current row
 
     for row_idx in range(header_row + 1, sheet.max_row + 1):
         name_val = sheet.cell(row=row_idx, column=col_map["stock_name"]).value
@@ -132,6 +148,13 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
 
         name_val = name_val.strip()
         name_lower = name_val.lower()
+
+        # Stop at the portfolio GRAND TOTAL — anything after it is supplementary
+        # disclosure (derivative/commodity-future detail tables, notes, symbol
+        # legends) that uses a different column layout and would double-count
+        # exposure, pushing the portfolio weight above 100%.
+        if "grand total" in name_lower:
+            break
 
         # Check if this row is a section header that changes the asset class
         # Only treat as header if the row has no numeric market value (real data rows have values)
@@ -152,10 +175,21 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
                 if pattern in name_lower:
                     if asset_class is not None:
                         current_asset_class = asset_class
+                        # Main sections also become the revert target; sub-section
+                        # classes (REIT) only override the effective class.
+                        if asset_class not in SUBSECTION_CLASSES:
+                            current_main_class = asset_class
                     is_section_header = True
                     break
 
         if is_section_header:
+            continue
+
+        # A "Sub Total" closes the current (sub-)section. Revert the effective
+        # class to the enclosing main section so following sibling rows aren't
+        # mislabeled with a leaked sub-section class (e.g. REIT -> Equity).
+        if "sub total" in name_lower or "subtotal" in name_lower or "sub-total" in name_lower:
+            current_asset_class = current_main_class
             continue
 
         # Skip summary/metadata rows
@@ -206,9 +240,6 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
                     if pct_str.startswith("(") and pct_str.endswith(")"):
                         pct_str = "-" + pct_str[1:-1]
                     pct_net_assets = float(pct_str)
-                    # If values look like decimals (e.g., 0.052 instead of 5.2), convert
-                    if 0 < abs(pct_net_assets) < 1:
-                        pct_net_assets *= 100
                 except (ValueError, TypeError):
                     pct_net_assets = 0.0
 
@@ -233,6 +264,11 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
             }
             asset_class = cash_to_class.get(cash_category, asset_class)
 
+        # Commodity ETFs (gold/silver) in multi-asset funds — classify by name so
+        # they are never mislabeled by a leaked section class (e.g. Treasury Bills).
+        if ("gold" in name_lower or "silver" in name_lower) and ("etf" in name_lower or "bees" in name_lower):
+            asset_class = "Commodities"
+
         # Skip rows with no value and no quantity (metadata/footnote rows)
         if market_value == 0 and quantity == 0 and pct_net_assets == 0:
             continue
@@ -251,32 +287,111 @@ def parse_sheet(sheet, filename: str, amc: str) -> list[dict]:
             "asset_class": asset_class,
         })
 
+    # Auto-detect if percentages are stored as decimals (sum ≈ 1.0 instead of ≈ 100)
+    if holdings:
+        total_pct = sum(abs(h["pct_of_net_assets"]) for h in holdings)
+        if 0.5 < total_pct < 2.0 and len(holdings) > 3:
+            for h in holdings:
+                h["pct_of_net_assets"] = round(h["pct_of_net_assets"] * 100, 4)
+
     return holdings
 
 
+class _XlrdSheetWrapper:
+    """Wraps an xlrd sheet to provide an openpyxl-compatible interface."""
+
+    def __init__(self, xlrd_sheet):
+        self._sheet = xlrd_sheet
+        self.title = xlrd_sheet.name
+        self.max_row = xlrd_sheet.nrows
+        self.max_column = xlrd_sheet.ncols
+        self.merged_cells = _MergedCellsWrapper(xlrd_sheet.merged_cells)
+
+    def cell(self, row, column):
+        """Return a cell-like object (1-indexed row/col like openpyxl)."""
+        try:
+            value = self._sheet.cell_value(row - 1, column - 1)
+            if value == "":
+                value = None
+        except (IndexError, Exception):
+            value = None
+        return _CellWrapper(value)
+
+
+class _CellWrapper:
+    def __init__(self, value):
+        self.value = value
+
+
+class _MergedCellsWrapper:
+    """Wraps xlrd merged_cells to provide openpyxl-compatible ranges."""
+
+    def __init__(self, merged_cells):
+        self._ranges = []
+        for rlo, rhi, clo, chi in merged_cells:
+            self._ranges.append(_MergedRange(rlo + 1, rhi, clo + 1, chi))
+
+    @property
+    def ranges(self):
+        return self._ranges
+
+
+class _MergedRange:
+    def __init__(self, min_row, max_row, min_col, max_col):
+        self.min_row = min_row
+        self.max_row = max_row
+        self.min_col = min_col
+        self.max_col = max_col
+
+
+class _XlrdWorkbookWrapper:
+    """Wraps an xlrd workbook to provide an openpyxl-compatible interface."""
+
+    def __init__(self, xlrd_wb):
+        self._wb = xlrd_wb
+        self.sheetnames = xlrd_wb.sheet_names()
+
+    def __getitem__(self, name):
+        return _XlrdSheetWrapper(self._wb.sheet_by_name(name))
+
+    def close(self):
+        self._wb.release_resources()
+
+
 def _open_workbook(filepath: Path):
-    """Open a workbook, handling .xls files that are actually .xlsx."""
+    """Open a workbook, handling both .xlsx and legacy .xls files."""
+    # Try openpyxl first (handles .xlsx and some .xls-renamed-xlsx)
     try:
         return openpyxl.load_workbook(filepath, read_only=False, data_only=True), None
     except Exception:
         pass
 
-    # If the file has .xls extension, it might be an xlsx in disguise
+    # For .xls files: try xlrd first (handles genuine legacy .xls), then renamed-xlsx fallback
     if filepath.suffix.lower() == ".xls":
-        tmp_path = Path(tempfile.gettempdir()) / (filepath.stem + "_tmp.xlsx")
+        # Try as legacy .xls via xlrd first
+        try:
+            import xlrd
+            xlrd_wb = xlrd.open_workbook(str(filepath))
+            return _XlrdWorkbookWrapper(xlrd_wb), None
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+        # Fallback: try as renamed xlsx
+        tmp_path = Path(tempfile.mkdtemp()) / (filepath.stem + "_tmp.xlsx")
         shutil.copy2(filepath, tmp_path)
         try:
             wb = openpyxl.load_workbook(tmp_path, read_only=False, data_only=True)
             return wb, tmp_path
-        except Exception as e:
+        except Exception:
             tmp_path.unlink(missing_ok=True)
-            raise e
 
     raise ValueError(f"Cannot open {filepath.name}")
 
 
 # Sheet names to skip (index/TOC sheets)
-SKIP_SHEETS = {"index", "toc", "table of contents", "summary", "sheet1"}
+SKIP_SHEETS = {"index", "toc", "table of contents", "summary", "sheet1", "abali"}
 
 
 def parse_file(filepath: Path) -> list[dict]:
@@ -442,7 +557,14 @@ def aggregate(all_holdings: list[dict], files_parsed: list[dict]) -> dict:
         if stock["sector_votes"]:
             stock["sector"] = max(stock["sector_votes"], key=stock["sector_votes"].get)
         if stock["asset_class_votes"]:
-            stock["asset_class"] = max(stock["asset_class_votes"], key=stock["asset_class_votes"].get)
+            # Deterministic tie-break: most votes wins; on a tie prefer "Equity"
+            # (the safe default for a security with a real industry sector),
+            # otherwise fall back to alphabetical order. Avoids non-deterministic
+            # dict-ordering flips that would split a holding across periods.
+            votes = stock["asset_class_votes"]
+            best = max(votes.values())
+            tied = sorted(ac for ac, n in votes.items() if n == best)
+            stock["asset_class"] = "Equity" if "Equity" in tied else tied[0]
 
     # --- Build output structures ---
     total_schemes = len(funds_data)
@@ -455,7 +577,7 @@ def aggregate(all_holdings: list[dict], files_parsed: list[dict]) -> dict:
         weight = stock["total_market_value_lakhs"] / total_aum if total_aum > 0 else 0
         stock_weights.append(weight)
 
-        weighted_avg = stock["total_pct_sum"]
+        weighted_avg = (stock["total_market_value_lakhs"] / total_aum * 100) if total_aum > 0 else 0
 
         stocks_output[key] = {
             "isin": stock["isin"],

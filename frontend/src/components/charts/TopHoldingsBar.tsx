@@ -1,39 +1,21 @@
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Cell,
-} from 'recharts';
 import { TrendingUp } from 'lucide-react';
 import type { Stock } from '../../types/portfolio';
-import { formatLakhs, formatPct } from '../../lib/formatters';
 
 interface TopHoldingsBarProps {
   stocks: Record<string, Stock>;
 }
 
-const COLORS = [
-  '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#d946ef',
-  '#ec4899', '#f43f5e', '#f97316', '#eab308', '#84cc16',
-];
+// Pure liquidity buckets — not investment holdings, so excluded from "Top Holdings"
+// (otherwise e.g. TREPS / "Clearing Corporation of India" dominates the list).
+const NON_HOLDING_CLASSES = new Set(['TREPS', 'Net Receivables/Payables', 'Cash']);
 
 export function TopHoldingsBar({ stocks }: TopHoldingsBarProps) {
-  const top10 = Object.values(stocks)
+  const top12 = Object.values(stocks)
+    .filter(s => !NON_HOLDING_CLASSES.has(s.asset_class))
     .sort((a, b) => b.total_market_value_lakhs - a.total_market_value_lakhs)
-    .slice(0, 10)
-    .map((s) => ({
-      name: s.name.length > 20 ? s.name.slice(0, 20) + '…' : s.name,
-      fullName: s.name,
-      value: s.total_market_value_lakhs,
-      weight: s.weighted_avg_pct,
-      fundCount: s.fund_count,
-      sector: s.sector,
-    }));
+    .slice(0, 12);
 
-  if (top10.length === 0) {
+  if (top12.length === 0) {
     return (
       <div className="bg-slate-900 rounded-xl border border-slate-700 p-5 shadow-lg shadow-black/20 flex items-center justify-center h-80">
         <p className="text-slate-500">No holdings data available</p>
@@ -45,39 +27,19 @@ export function TopHoldingsBar({ stocks }: TopHoldingsBarProps) {
     <div className="bg-slate-900 rounded-xl border border-slate-700 p-5 shadow-lg shadow-black/20">
       <div className="flex items-center gap-2 mb-4">
         <TrendingUp className="h-5 w-5 text-blue-600" />
-        <h3 className="font-semibold text-slate-200">Top 10 Holdings by Value</h3>
+        <h3 className="font-semibold text-slate-200">Top Holdings</h3>
       </div>
-      <ResponsiveContainer width="100%" height={350}>
-        <BarChart data={top10} layout="vertical" margin={{ left: 20, right: 20 }}>
-          <XAxis type="number" tickFormatter={(v) => formatLakhs(v)} tick={{ fontSize: 11, fill: '#94a3b8' }} />
-          <YAxis
-            type="category"
-            dataKey="name"
-            width={140}
-            tick={{ fontSize: 11, fill: '#94a3b8' }}
-          />
-          <Tooltip
-            content={({ payload }) => {
-              if (!payload || payload.length === 0) return null;
-              const item = payload[0].payload;
-              return (
-                <div className="bg-slate-800 border border-slate-600 rounded-lg shadow-lg p-3 text-sm">
-                  <p className="font-semibold text-slate-200">{item.fullName}</p>
-                  <p className="text-slate-400">Value: {formatLakhs(item.value)}</p>
-                  <p className="text-slate-400">Avg Weight: {formatPct(item.weight)}</p>
-                  <p className="text-slate-400">Funds: {item.fundCount}</p>
-                  <p className="text-slate-400">Sector: {item.sector || 'N/A'}</p>
-                </div>
-              );
-            }}
-          />
-          <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-            {top10.map((_, index) => (
-              <Cell key={index} fill={COLORS[index % COLORS.length]} />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
+      <div className="space-y-1.5">
+        {top12.map((stock, i) => (
+          <div key={stock.isin || stock.name} className="flex items-center justify-between py-1">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <span className="text-xs text-slate-500 w-5 text-right shrink-0">{i + 1}.</span>
+              <span className="text-sm text-slate-200 truncate">{stock.name}</span>
+            </div>
+            <span className="text-sm font-semibold text-blue-400 ml-2 shrink-0">{stock.weighted_avg_pct.toFixed(2)}%</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

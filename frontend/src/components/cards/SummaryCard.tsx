@@ -6,11 +6,15 @@ interface SummaryCardProps {
   subtitle?: string;
   icon: ReactNode;
   color?: string;
+  onClick?: () => void;
 }
 
-export function SummaryCard({ title, value, subtitle, icon, color = 'text-blue-600' }: SummaryCardProps) {
+export function SummaryCard({ title, value, subtitle, icon, color = 'text-blue-600', onClick }: SummaryCardProps) {
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700 p-5 shadow-lg shadow-black/20">
+    <div
+      onClick={onClick}
+      className={`bg-slate-900 rounded-xl border border-slate-700 p-5 shadow-lg shadow-black/20 ${onClick ? 'cursor-pointer hover:border-slate-500 transition-colors' : ''}`}
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm font-medium text-slate-400">{title}</p>

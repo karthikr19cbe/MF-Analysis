@@ -32,6 +32,8 @@ export interface Stock {
   weighted_avg_pct: number;
   fund_count: number;
   funds: FundHolding[];
+  /** Persisted market-cap classification (derived backend-side across all periods). */
+  market_cap?: 'Large Cap' | 'Mid Cap' | 'Small Cap';
 }
 
 export interface Sector {
@@ -108,4 +110,61 @@ export interface PortfolioData {
   funds: Record<string, Fund>;
   concentration: Concentration;
   liquidity_summary: LiquiditySummary;
+  // Multi-period fields
+  periods?: Record<string, PeriodSummary>;
+  comparisons?: Record<string, ComparisonData>;
+  current_period?: string;
+  period_keys?: string[];
+  period_labels?: Record<string, string>;
+}
+
+export interface PeriodSummary {
+  label: string;
+  meta: Meta;
+  funds: Record<string, { amc: string; total_aum_lakhs: number; holding_count: number }>;
+  concentration: Concentration;
+  liquidity_summary: LiquiditySummary;
+}
+
+export interface StockComparison {
+  name: string;
+  isin: string | null;
+  sector: string;
+  asset_class: string;
+  status: 'New' | 'Exit' | 'Inc' | 'Dec' | 'Hold';
+  prev_market_value_lakhs: number | null;
+  curr_market_value_lakhs: number | null;
+  prev_pct: number | null;
+  curr_pct: number | null;
+  delta_pct: number;
+  prev_quantity: number | null;
+  curr_quantity: number | null;
+}
+
+export interface FundComparison {
+  fund_name: string;
+  amc: string;
+  prev_period: string;
+  curr_period: string;
+  prev_aum_lakhs: number;
+  curr_aum_lakhs: number;
+  total_stocks: number;
+  counts: {
+    new: number;
+    exit: number;
+    inc: number;
+    dec: number;
+    hold: number;
+  };
+  stocks: StockComparison[];
+  prev_asset_allocation: Record<string, number>;
+  curr_asset_allocation: Record<string, number>;
+}
+
+export interface ComparisonData {
+  prev_period: string;
+  curr_period: string;
+  prev_label: string;
+  curr_label: string;
+  funds: Record<string, FundComparison>;
 }

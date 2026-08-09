@@ -1,21 +1,37 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { usePortfolioData } from './hooks/usePortfolioData';
 import { Header } from './components/layout/Header';
 import { Sidebar, type ViewMode } from './components/layout/Sidebar';
 import { DashboardGrid } from './components/layout/DashboardGrid';
 import { HoldingsDashboard } from './components/layout/HoldingsDashboard';
+import { PortfolioEvolution } from './components/layout/PortfolioEvolution';
 import { extractFundView } from './lib/fundView';
 
 function App() {
   const { data, loading, error, refresh } = usePortfolioData();
   const [selectedFund, setSelectedFund] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('dashboard');
+  const [selectedComparison, setSelectedComparison] = useState<string | null>(null);
+  const [assetClassFilter, setAssetClassFilter] = useState<string | null>(null);
+
+  const handleViewModeChange = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+  }, []);
 
   const viewData = useMemo(() => {
     if (!data) return null;
     if (!selectedFund) return data;
     return extractFundView(data, selectedFund);
   }, [data, selectedFund]);
+
+  // Get comparison data for the selected fund
+  const comparisonData = useMemo(() => {
+    if (!data?.comparisons || !selectedFund) return null;
+    const keys = Object.keys(data.comparisons);
+    const compKey = selectedComparison || keys[keys.length - 1];
+    if (!compKey) return null;
+    return data.comparisons[compKey]?.funds[selectedFund] ?? null;
+  }, [data, selectedFund, selectedComparison]);
 
   return (
     <div className="min-h-screen bg-slate-950">
@@ -34,7 +50,10 @@ function App() {
             selectedFund={selectedFund}
             onSelectFund={setSelectedFund}
             viewMode={viewMode}
-            onViewModeChange={setViewMode}
+            onViewModeChange={handleViewModeChange}
+            comparisons={data.comparisons}
+            selectedComparison={selectedComparison}
+            onSelectComparison={setSelectedComparison}
           />
         )}
 
@@ -64,11 +83,28 @@ function App() {
           )}
 
           {viewData && viewMode === 'dashboard' && (
-            <DashboardGrid data={viewData} fundName={selectedFund} onViewHoldings={() => setViewMode('holdings')} />
+            <DashboardGrid
+              data={viewData}
+              allStocks={selectedFund ? data?.stocks : undefined}
+              fundName={selectedFund}
+              onViewHoldings={() => { setAssetClassFilter(null); handleViewModeChange('holdings'); }}
+              onViewAssetClassHoldings={(ac) => { setAssetClassFilter(ac); handleViewModeChange('holdings'); }}
+            />
           )}
 
           {viewData && viewMode === 'holdings' && (
-            <HoldingsDashboard stocks={viewData.stocks} fundName={selectedFund} />
+            <HoldingsDashboard stocks={viewData.stocks} fundName={selectedFund} initialAssetClassFilter={assetClassFilter} allStocks={selectedFund ? data?.stocks : undefined} />
+          )}
+
+          {viewMode === 'comparison' && comparisonData && (
+            <PortfolioEvolution comparison={comparisonData} />
+          )}
+
+          {viewMode === 'comparison' && !comparisonData && selectedFund && (
+            <div className="px-6 py-20 text-center">
+              <p className="text-slate-400 text-lg">No comparison data available for this fund.</p>
+              <p className="text-slate-500 text-sm mt-1">Multi-period data is needed for this fund.</p>
+            </div>
           )}
 
           {!loading && !data && !error && (

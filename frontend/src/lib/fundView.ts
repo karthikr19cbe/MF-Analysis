@@ -75,8 +75,9 @@ export function extractFundView(data: PortfolioData, fundName: string): Portfoli
   const top10Value = sortedStocks.slice(0, 10).reduce((s, st) => s + st.total_market_value_lakhs, 0);
   const top10Weight = fundAum > 0 ? (top10Value / fundAum) * 100 : 0;
 
-  // High conviction — for a single fund, show top holdings by weight
-  const highConviction: HighConviction[] = sortedStocks.slice(0, 20).map(s => ({
+  // Fund Holdings table — show ALL holdings in this fund, ordered by weight
+  // (the subtitle promises "all stocks in this fund by weight").
+  const highConviction: HighConviction[] = sortedStocks.map(s => ({
     isin: s.isin,
     name: s.name,
     fund_count: 1,
