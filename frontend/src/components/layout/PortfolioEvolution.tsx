@@ -182,49 +182,41 @@ export function PortfolioEvolution({ comparison }: PortfolioEvolutionProps) {
         </div>
       )}
 
-      {/* Top Increases / Top Decreases */}
-      {(comparison.counts.inc > 0 || comparison.counts.dec > 0) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          {/* Top Increases */}
-          {comparison.counts.inc > 0 && (
-            <div className="bg-slate-900 rounded-xl border border-slate-700 p-5 shadow-lg shadow-black/20">
-              <h3 className="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-3">Top Increases</h3>
-              <div className="space-y-1.5">
-                {comparison.stocks
-                  .filter(s => s.status === 'Inc')
-                  .sort((a, b) => b.delta_pct - a.delta_pct)
-                  .slice(0, 5)
-                  .map(s => (
-                    <div key={s.isin || s.name} className="flex items-center justify-between text-sm">
-                      <span className="text-slate-300 truncate flex-1">{s.name}</span>
-                      <span className="text-emerald-400 font-mono ml-2 shrink-0 flex items-center gap-0.5">
-                        <ArrowUp className="h-3 w-3" />+{s.delta_pct.toFixed(2)}%
-                      </span>
-                    </div>
-                  ))}
+      {/* Movement breakdown: New Buys / Increases / Decreases / Exits — separate */}
+      {(comparison.counts.new + comparison.counts.inc + comparison.counts.dec + comparison.counts.exit) > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {([
+            { status: 'New', title: 'New Buys', color: 'text-emerald-400', dir: 'up' as const, sort: (a: StockComparison, b: StockComparison) => b.delta_pct - a.delta_pct },
+            { status: 'Inc', title: 'Increases', color: 'text-blue-400', dir: 'up' as const, sort: (a: StockComparison, b: StockComparison) => b.delta_pct - a.delta_pct },
+            { status: 'Dec', title: 'Decreases', color: 'text-orange-400', dir: 'down' as const, sort: (a: StockComparison, b: StockComparison) => a.delta_pct - b.delta_pct },
+            { status: 'Exit', title: 'Exits', color: 'text-red-400', dir: 'down' as const, sort: (a: StockComparison, b: StockComparison) => a.delta_pct - b.delta_pct },
+          ]).map(({ status, title, color, dir, sort }) => {
+            const items = comparison.stocks.filter(s => s.status === status).sort(sort);
+            const total = items.length;
+            return (
+              <div key={status} className="bg-slate-900 rounded-xl border border-slate-700 p-4 shadow-lg shadow-black/20">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className={`text-xs font-semibold uppercase tracking-wider ${color}`}>{title}</h3>
+                  <span className="text-xs text-slate-500">{total}</span>
+                </div>
+                {total === 0 ? (
+                  <p className="text-xs text-slate-600 py-1">None this period</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+                    {items.map(s => (
+                      <div key={s.isin || s.name} className="flex items-center justify-between text-sm gap-2">
+                        <span className="text-slate-300 truncate flex-1" title={s.name}>{s.name}</span>
+                        <span className={`${color} font-mono shrink-0 flex items-center gap-0.5`}>
+                          {dir === 'up' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+                          {s.delta_pct >= 0 ? '+' : ''}{s.delta_pct.toFixed(2)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
-          )}
-          {/* Top Decreases */}
-          {comparison.counts.dec > 0 && (
-            <div className="bg-slate-900 rounded-xl border border-slate-700 p-5 shadow-lg shadow-black/20">
-              <h3 className="text-xs font-semibold text-orange-400 uppercase tracking-wider mb-3">Top Decreases</h3>
-              <div className="space-y-1.5">
-                {comparison.stocks
-                  .filter(s => s.status === 'Dec')
-                  .sort((a, b) => a.delta_pct - b.delta_pct)
-                  .slice(0, 5)
-                  .map(s => (
-                    <div key={s.isin || s.name} className="flex items-center justify-between text-sm">
-                      <span className="text-slate-300 truncate flex-1">{s.name}</span>
-                      <span className="text-red-400 font-mono ml-2 shrink-0 flex items-center gap-0.5">
-                        <ArrowDown className="h-3 w-3" />{s.delta_pct.toFixed(2)}%
-                      </span>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          )}
+            );
+          })}
         </div>
       )}
 
