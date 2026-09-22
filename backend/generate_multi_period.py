@@ -417,6 +417,33 @@ def main():
         periods_data[period["period_key"]] = data
         period_labels[period["period_key"]] = period["period_label"]
 
+    # --- Fail-loud guard -------------------------------------------------
+    # A held fund silently vanishing (because a disclosure retitled its sheet
+    # so the scheme name stopped matching HELD_FUNDS) previously went unnoticed
+    # and the fund just disappeared from the dashboard. Compare each period
+    # against funds seen in earlier periods and shout when one drops out.
+    seen_before = set()
+    regressions = []
+    for period in periods:
+        key = period["period_key"]
+        present = set(periods_data[key].get("funds", {}))
+        for fund in sorted(seen_before - present):
+            msg = (
+                f"{period['period_label']}: held fund '{fund}' is MISSING but was "
+                f"present in an earlier period ({len(period['files'])} files in folder)"
+            )
+            logger.error(f"  !! {msg}")
+            regressions.append(msg)
+        seen_before |= present
+
+    if regressions:
+        logger.error(
+            f"{len(regressions)} fund-coverage regression(s) detected. If that "
+            f"disclosure is genuinely not published yet this is expected; otherwise "
+            f"the scheme name likely stopped matching HELD_FUNDS."
+        )
+
+
     # Use latest period as the current consolidated data
     latest_key = periods[-1]["period_key"]
     latest_data = periods_data[latest_key]

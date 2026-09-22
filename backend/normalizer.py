@@ -291,6 +291,7 @@ _SHEET_TAB_SCHEME_OVERRIDES = {
     "ABAFC": "Abakkus Flexi Cap Fund",
     "ABASC": "Abakkus Small Cap Fund",
     "ABALI": "Abakkus Liquid Fund",
+    "ZN250": "Zerodha Nifty LargeMidcap 250 Index Fund",
 }
 
 # Prefix overrides for sheet tabs that carry a trailing date (e.g.
@@ -301,7 +302,24 @@ _SHEET_TAB_SCHEME_OVERRIDES = {
 _SHEET_TAB_PREFIX_OVERRIDES = {
     "CMMAAF": "Capitalmind Multi Asset Allocation Fund",
     "CMFCF": "Capitalmind Flexi Cap Fund",
+    "CMFLEXI": "Capitalmind Flexi Cap Fund",  # older tab spelling of the same scheme
+    "ZN250": "Zerodha Nifty LargeMidcap 250 Index Fund",
 }
+
+
+# A title row that is JUST an AMC name ("ZERODHA MUTUAL FUND", "Abakkus Mutual
+# Fund") identifies the fund house, not the scheme. Such banners appear and
+# disappear between months; picking one up silently renames the scheme and can
+# drop the fund out of the held-funds filter entirely. Reject them so the scan
+# keeps looking for the specific scheme title.
+_AMC_BANNER_RE = re.compile(
+    r"^[a-z0-9&.\-\s]{2,40}?\s+(mutual\s+fund|asset\s+management(\s+company)?|amc|trustee[a-z\s]*)\.?$"
+)
+
+
+def _is_amc_banner(text: str) -> bool:
+    """True if the text is a bare AMC/fund-house banner rather than a scheme name."""
+    return bool(_AMC_BANNER_RE.match(re.sub(r"\s+", " ", text.strip().lower())))
 
 
 def extract_scheme_name(sheet, header_row: int, column_mapping: dict) -> str:
@@ -320,7 +338,22 @@ def extract_scheme_name(sheet, header_row: int, column_mapping: dict) -> str:
         if tab.startswith(prefix):
             return scheme
 
-    # Strategy 1: Check rows above header for scheme name text
+    # Strategy 1: Honour an explicit "SCHEME NAME :" label if the sheet has one.
+    # This is the most authoritative source - it is the AMC stating the scheme
+    # outright - and it is immune to AMC banners and sheet-tab renames.
+    for row_idx in range(1, header_row):
+        for col_idx in range(1, min(sheet.max_column + 1, 10)):
+            val = sheet.cell(row=row_idx, column=col_idx).value
+            if not val or not isinstance(val, str):
+                continue
+            if re.match(r"^\s*scheme\s*name\s*:?\s*$", val.strip().lower()):
+                # The scheme name sits in a following cell on the same row.
+                for nxt in range(col_idx + 1, min(sheet.max_column + 1, col_idx + 5)):
+                    cand = sheet.cell(row=row_idx, column=nxt).value
+                    if cand and isinstance(cand, str) and len(cand.strip()) > 4:
+                        return cand.strip()
+
+    # Strategy 2: Check rows above header for scheme name text
     scheme_keywords = ["fund", "scheme", "plan", "growth", "dividend", "direct", "regular", "idcw"]
     for row_idx in range(1, header_row):
         for col_idx in range(1, min(sheet.max_column + 1, 10)):
@@ -328,19 +361,19 @@ def extract_scheme_name(sheet, header_row: int, column_mapping: dict) -> str:
             val = cell.value
             if val and isinstance(val, str) and len(val) > 10:
                 val_lower = val.lower()
-                if any(kw in val_lower for kw in scheme_keywords):
+                if any(kw in val_lower for kw in scheme_keywords) and not _is_amc_banner(val):
                     return val.strip()
 
-    # Strategy 2: Check merged cells
+    # Strategy 3: Check merged cells
     for merged_range in sheet.merged_cells.ranges:
         cell = sheet.cell(row=merged_range.min_row, column=merged_range.min_col)
         val = cell.value
         if val and isinstance(val, str) and len(val) > 10:
             val_lower = val.lower()
-            if any(kw in val_lower for kw in scheme_keywords):
+            if any(kw in val_lower for kw in scheme_keywords) and not _is_amc_banner(val):
                 return val.strip()
 
-    # Strategy 3: Fall back to sheet tab name
+    # Strategy 4: Fall back to sheet tab name
     return sheet.title
 
 
